@@ -7,7 +7,7 @@
 
 ## 1. 白嫖我的，点个 Star ，直接提交 issues
 
-要求：严格按照模板规范提交，参考： [成功案例](https://github.com/zhuchance/hub-mirror/issues/1) ，[失败案例](https://github.com/zhuchance/hub-mirror/issues/2)
+要求：严格按照模板规范提交，参考： [成功案例](https://github.com/zhuchance/hub-mirror/issues/1) ，[失败案例](https://github.com/zhuchance/hub-mirror/issues/3)
 
 限制：每次提交最多 5 个镜像地址
 
