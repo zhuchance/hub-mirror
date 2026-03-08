@@ -1,0 +1,41 @@
+name: Sync to Aliyun ACR
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: '源镜像地址 (例如: alpine:latest 或 gcr.io/kaniko-project/executor:latest)'
+        required: true
+        default: 'alpine:latest'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-hangzhou.aliyuncs.com
+          username: ${{ secrets.ALiyun_USER }}
+          password: ${{ secrets.ALiyun_PWD }}
+
+      - name: Pull and Push Image
+        run: |
+          # 1. 获取源镜像
+          SOURCE_IMAGE=${{ github.event.inputs.image }}
+          
+          # 2. 提取镜像名称（去掉斜杠和域名部分，只留镜像名和版本）
+          # 例如: gcr.io/google-containers/pause:3.2 -> pause:3.2
+          IMAGE_NAME_TAG=$(echo $SOURCE_IMAGE | awk -F'/' '{print $NF}')
+          
+          # 3. 定义阿里云目标地址（假设你的命名空间叫 zhuchance，请根据实际修改）
+          TARGET_IMAGE="registry.cn-hangzhou.aliyuncs.com/mgfw/${IMAGE_NAME_TAG}"
+          
+          echo "正在同步: $SOURCE_IMAGE -> $TARGET_IMAGE"
+          
+          # 4. 执行同步
+          docker pull $SOURCE_IMAGE
+          docker tag $SOURCE_IMAGE $TARGET_IMAGE
+          docker push $TARGET_IMAGE
+          
+          echo "同步完成！"
