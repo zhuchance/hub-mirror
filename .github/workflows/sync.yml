@@ -4,9 +4,12 @@ on:
   issues:
     types: [opened, edited]
 
+# 全局环境变量，解决 Node.js 20 弃用警告
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   sync:
-    # 只有标题包含 sync 且是你本人操作时才触发，防止别人乱发 Issue 刷你的额度
     if: contains(github.event.issue.title, 'sync') && github.event.issue.user.login == 'zhuchance'
     runs-on: ubuntu-latest
     steps:
@@ -17,39 +20,37 @@ jobs:
           username: ${{ secrets.ALiyun_USER }}
           password: ${{ secrets.ALiyun_PWD }}
 
-      - name: Process Images from Issue
+      - name: Process Images
         env:
-          # 通过环境变量传递，避免直接在 shell 中拼接导致换行失效
-          ISSUE_BODY: ${{ github.event.issue.body }}
+          # 关键：通过环境变量把 Issue 正文传进去，避免 Shell 注入
+          RAW_BODY: ${{ github.event.issue.body }}
         run: |
-          # 1. 使用 'EOF' (带引号) 确保内容原封不动写入
-          cat << 'EOF' > raw_images.txt
-          ${{ github.event.issue.body }}
-          EOF
+          # 将环境变量内容安全写入文件，保留换行
+          printf "%s" "$RAW_BODY" > raw_images.txt
 
-          # 2. 逐行读取并清理数据
+          # 逐行读取并清理
           while IFS= read -r line || [[ -n "$line" ]]; do
-            # 过滤掉回车符(\r)、代码块反引号(`)并清除前后空格
+            # 1. 彻底清除回车符、反引号、前后空格
             CLEAN_IMG=$(echo "$line" | tr -d '\r' | tr -d '`' | xargs)
             
-            # 跳过空行或包含非法空格的行
+            # 2. 跳过空行和带有空格的无关行（比如正文里的描述文字）
             [[ -z "$CLEAN_IMG" ]] && continue
             [[ "$CLEAN_IMG" == *" "* ]] && continue
 
             echo "--------------------------------"
             echo "正在同步: [$CLEAN_IMG]"
             
-            # 提取镜像短名，例如 library/nginx:latest -> nginx:latest
+            # 3. 提取短名（例如 library/nginx:latest -> nginx:latest）
             IMAGE_NAME_TAG=$(echo "$CLEAN_IMG" | awk -F'/' '{print $NF}')
-            TARGET="registry.cn-hangzhou.aliyuncs.com/zhuchance/${IMAGE_NAME_TAG}"
+            TARGET="registry.cn-hangzhou.aliyuncs.com/mgfw/${IMAGE_NAME_TAG}"
             
-            # 执行拉取、打标、推送
+            # 4. 拉取推送
             if docker pull "$CLEAN_IMG"; then
               docker tag "$CLEAN_IMG" "$TARGET"
               docker push "$TARGET"
               echo "✅ 成功: $TARGET"
             else
-              echo "❌ 失败: 无法拉取 $CLEAN_IMG"
+              echo "❌ 失败: $CLEAN_IMG"
             fi
           done < raw_images.txt
 
@@ -62,5 +63,5 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '🚀 **同步任务已执行完毕！**\n请前往阿里云 ACR 查看镜像。'
+              body: '🚀 **同步已完成！**\nNode 24 环境运行正常，镜像已推送到阿里云。'
             })
