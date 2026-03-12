@@ -1,12 +1,15 @@
-name: Sync to Aliyun ACR
+name: Sync Multi-Images to Aliyun
 
 on:
   workflow_dispatch:
     inputs:
-      image:
-        description: '源镜像地址 (例如: alpine:latest 或 gcr.io/kaniko-project/executor:latest)'
+      images:
+        description: '请输入镜像列表（每行一个，支持换行）'
         required: true
-        default: 'alpine:latest'
+        type: textarea
+        default: |
+          alpine:latest
+          nginx:stable
 
 jobs:
   sync:
@@ -19,23 +22,28 @@ jobs:
           username: ${{ secrets.ALiyun_USER }}
           password: ${{ secrets.ALiyun_PWD }}
 
-      - name: Pull and Push Image
+      - name: Pull and Push Images
         run: |
-          # 1. 获取源镜像
-          SOURCE_IMAGE=${{ github.event.inputs.image }}
-          
-          # 2. 提取镜像名称（去掉斜杠和域名部分，只留镜像名和版本）
-          # 例如: gcr.io/google-containers/pause:3.2 -> pause:3.2
-          IMAGE_NAME_TAG=$(echo $SOURCE_IMAGE | awk -F'/' '{print $NF}')
-          
-          # 3. 定义阿里云目标地址（假设你的命名空间叫 zhuchance，请根据实际修改）
-          TARGET_IMAGE="registry.cn-hangzhou.aliyuncs.com/mgfw/${IMAGE_NAME_TAG}"
-          
-          echo "正在同步: $SOURCE_IMAGE -> $TARGET_IMAGE"
-          
-          # 4. 执行同步
-          docker pull $SOURCE_IMAGE
-          docker tag $SOURCE_IMAGE $TARGET_IMAGE
-          docker push $TARGET_IMAGE
-          
-          echo "同步完成！"
+          # 使用 echo 配合 while read 处理多行输入
+          echo "${{ github.event.inputs.images }}" | while IFS= read -r line || [[ -n "$line" ]]; do
+            # 1. 过滤空行和空格
+            SOURCE_IMAGE=$(echo "$line" | xargs)
+            [ -z "$SOURCE_IMAGE" ] && continue
+            
+            echo "--------------------------------"
+            echo "正在处理: $SOURCE_IMAGE"
+            
+            # 2. 自动处理目标名称
+            # 将 gcr.io/distroless/static:latest 转换为 static:latest
+            IMAGE_NAME_TAG=$(echo $SOURCE_IMAGE | awk -F'/' '{print $NF}')
+            TARGET_IMAGE="registry.cn-hangzhou.aliyuncs.com/zhuchance/${IMAGE_NAME_TAG}"
+            
+            # 3. 执行同步
+            if docker pull $SOURCE_IMAGE; then
+              docker tag $SOURCE_IMAGE $TARGET_IMAGE
+              docker push $TARGET_IMAGE
+              echo "✅ 成功: $TARGET_IMAGE"
+            else
+              echo "❌ 失败: 无法拉取镜像 $SOURCE_IMAGE"
+            fi
+          done
