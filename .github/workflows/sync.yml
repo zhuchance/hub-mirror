@@ -1,32 +1,47 @@
-- name: Pull and Push Images
+name: Sync Multi-Images to Aliyun
+
+on:
+  workflow_dispatch:
+    inputs:
+      images:
+        description: '请输入镜像列表（每行一个）'
+        required: true
+        type: textarea
+        default: |
+          alpine:latest
+          nginx:stable
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-hangzhou.aliyuncs.com
+          username: ${{ secrets.ALiyun_USER }}
+          password: ${{ secrets.ALiyun_PWD }}
+
+      - name: Pull and Push Images
         env:
-          # 将输入存入环境变量，避免 Shell 解析换行符失效
           RAW_IMAGES: ${{ github.event.inputs.images }}
         run: |
-          # 1. 将环境变量中的内容写入临时文件，确保换行符被正确保留
           echo "$RAW_IMAGES" > images_list.txt
-
-          # 2. 逐行读取文件进行处理
           while IFS= read -r line || [[ -n "$line" ]]; do
-            # 清除前后空格和回车符（兼容 Windows 换行符）
             SOURCE_IMAGE=$(echo "$line" | sed 's/\r//g' | xargs)
-            
-            # 跳过空行
             [ -z "$SOURCE_IMAGE" ] && continue
             
             echo "--------------------------------"
             echo "正在处理: $SOURCE_IMAGE"
             
-            # 提取镜像短名（如 library/nginx:latest -> nginx:latest）
             IMAGE_NAME_TAG=$(echo $SOURCE_IMAGE | awk -F'/' '{print $NF}')
             TARGET_IMAGE="registry.cn-hangzhou.aliyuncs.com/zhuchance/${IMAGE_NAME_TAG}"
             
-            # 执行同步
             if docker pull $SOURCE_IMAGE; then
               docker tag $SOURCE_IMAGE $TARGET_IMAGE
               docker push $TARGET_IMAGE
               echo "✅ 成功: $TARGET_IMAGE"
             else
-              echo "❌ 失败: 无法拉取镜像 $SOURCE_IMAGE"
+              echo "❌ 失败: $SOURCE_IMAGE"
             fi
           done < images_list.txt
