@@ -1,18 +1,13 @@
-name: Sync Multi-Images to Aliyun
+name: Sync Images via Issue
 
 on:
-  workflow_dispatch:
-    inputs:
-      images:
-        description: '请输入镜像列表（每行一个）'
-        required: true
-        type: textarea
-        default: |
-          alpine:latest
-          nginx:stable
+  issues:
+    types: [opened, edited]
 
 jobs:
   sync:
+    # 只有标题包含 sync 且是你本人操作时才触发，防止别人乱发 Issue 刷你的额度
+    if: contains(github.event.issue.title, 'sync') && github.event.issue.user.login == 'zhuchance'
     runs-on: ubuntu-latest
     steps:
       - name: Login to Aliyun ACR
@@ -22,26 +17,50 @@ jobs:
           username: ${{ secrets.ALiyun_USER }}
           password: ${{ secrets.ALiyun_PWD }}
 
-      - name: Pull and Push Images
+      - name: Process Images from Issue
         env:
-          RAW_IMAGES: ${{ github.event.inputs.images }}
+          # 通过环境变量传递，避免直接在 shell 中拼接导致换行失效
+          ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
-          echo "$RAW_IMAGES" > images_list.txt
+          # 1. 使用 'EOF' (带引号) 确保内容原封不动写入
+          cat << 'EOF' > raw_images.txt
+          ${{ github.event.issue.body }}
+          EOF
+
+          # 2. 逐行读取并清理数据
           while IFS= read -r line || [[ -n "$line" ]]; do
-            SOURCE_IMAGE=$(echo "$line" | sed 's/\r//g' | xargs)
-            [ -z "$SOURCE_IMAGE" ] && continue
+            # 过滤掉回车符(\r)、代码块反引号(`)并清除前后空格
+            CLEAN_IMG=$(echo "$line" | tr -d '\r' | tr -d '`' | xargs)
             
+            # 跳过空行或包含非法空格的行
+            [[ -z "$CLEAN_IMG" ]] && continue
+            [[ "$CLEAN_IMG" == *" "* ]] && continue
+
             echo "--------------------------------"
-            echo "正在处理: $SOURCE_IMAGE"
+            echo "正在同步: [$CLEAN_IMG]"
             
-            IMAGE_NAME_TAG=$(echo $SOURCE_IMAGE | awk -F'/' '{print $NF}')
-            TARGET_IMAGE="registry.cn-hangzhou.aliyuncs.com/zhuchance/${IMAGE_NAME_TAG}"
+            # 提取镜像短名，例如 library/nginx:latest -> nginx:latest
+            IMAGE_NAME_TAG=$(echo "$CLEAN_IMG" | awk -F'/' '{print $NF}')
+            TARGET="registry.cn-hangzhou.aliyuncs.com/zhuchance/${IMAGE_NAME_TAG}"
             
-            if docker pull $SOURCE_IMAGE; then
-              docker tag $SOURCE_IMAGE $TARGET_IMAGE
-              docker push $TARGET_IMAGE
-              echo "✅ 成功: $TARGET_IMAGE"
+            # 执行拉取、打标、推送
+            if docker pull "$CLEAN_IMG"; then
+              docker tag "$CLEAN_IMG" "$TARGET"
+              docker push "$TARGET"
+              echo "✅ 成功: $TARGET"
             else
-              echo "❌ 失败: $SOURCE_IMAGE"
+              echo "❌ 失败: 无法拉取 $CLEAN_IMG"
             fi
-          done < images_list.txt
+          done < raw_images.txt
+
+      - name: Success Comment
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '🚀 **同步任务已执行完毕！**\n请前往阿里云 ACR 查看镜像。'
+            })
