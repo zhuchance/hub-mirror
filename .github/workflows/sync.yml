@@ -1,15 +1,19 @@
-name: Sync Images via Issue
+name: Sync Images via Actions UI
 
 on:
-  issues:
-    types: [opened, edited]
+  workflow_dispatch:
+    inputs:
+      images:
+        description: '请输入要同步的镜像（每行一个）'
+        required: true
+        type: string
+        default: 'nginx:latest'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   sync:
-    if: contains(github.event.issue.title, 'sync') && github.event.issue.user.login == 'zhuchance'
     runs-on: ubuntu-latest
     steps:
       - name: Login to Aliyun ACR
@@ -19,9 +23,10 @@ jobs:
           username: ${{ secrets.ALiyun_USER }}
           password: ${{ secrets.ALiyun_PWD }}
 
-      - name: Process Images (Non-Interactive Safe)
+      - name: Process Images
         env:
-          RAW_BODY: ${{ github.event.issue.body }}
+          # 直接获取在 Actions 页面手动输入的文本
+          RAW_BODY: ${{ inputs.images }}
         run: |
           printf "%s" "$RAW_BODY" > raw_images.txt
 
@@ -37,24 +42,11 @@ jobs:
             IMAGE_NAME_TAG=$(echo "$CLEAN_IMG" | awk -F'/' '{print $NF}')
             TARGET="registry.cn-hangzhou.aliyuncs.com/mgfw/${IMAGE_NAME_TAG}"
             
-            # 注意：增加 < /dev/null 彻底阻断交互输入请求，防止 stdin 被抢占
             if docker pull "$CLEAN_IMG" < /dev/null; then
               docker tag "$CLEAN_IMG" "$TARGET"
               docker push "$TARGET" < /dev/null
-              echo "✅ 成功推送: $TARGET"
+              echo "✅ 成功: $TARGET"
             else
-              echo "❌ 镜像拉取失败: $CLEAN_IMG"
+              echo "❌ 失败: $CLEAN_IMG"
             fi
           done < raw_images.txt
-
-      - name: Success Comment
-        if: success()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: '🚀 **非交互式同步已完成！**\n镜像已成功重命名并推送到阿里云 ACR。'
-            })
