@@ -4,7 +4,6 @@ on:
   issues:
     types: [opened, edited]
 
-# 全局环境变量，解决 Node.js 20 弃用警告
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
@@ -20,37 +19,31 @@ jobs:
           username: ${{ secrets.ALiyun_USER }}
           password: ${{ secrets.ALiyun_PWD }}
 
-      - name: Process Images
+      - name: Process Images (Non-Interactive Safe)
         env:
-          # 关键：通过环境变量把 Issue 正文传进去，避免 Shell 注入
           RAW_BODY: ${{ github.event.issue.body }}
         run: |
-          # 将环境变量内容安全写入文件，保留换行
           printf "%s" "$RAW_BODY" > raw_images.txt
 
-          # 逐行读取并清理
           while IFS= read -r line || [[ -n "$line" ]]; do
-            # 1. 彻底清除回车符、反引号、前后空格
             CLEAN_IMG=$(echo "$line" | tr -d '\r' | tr -d '`' | xargs)
             
-            # 2. 跳过空行和带有空格的无关行（比如正文里的描述文字）
             [[ -z "$CLEAN_IMG" ]] && continue
             [[ "$CLEAN_IMG" == *" "* ]] && continue
 
             echo "--------------------------------"
             echo "正在同步: [$CLEAN_IMG]"
             
-            # 3. 提取短名（例如 library/nginx:latest -> nginx:latest）
             IMAGE_NAME_TAG=$(echo "$CLEAN_IMG" | awk -F'/' '{print $NF}')
             TARGET="registry.cn-hangzhou.aliyuncs.com/mgfw/${IMAGE_NAME_TAG}"
             
-            # 4. 拉取推送
-            if docker pull "$CLEAN_IMG"; then
+            # 注意：增加 < /dev/null 彻底阻断交互输入请求，防止 stdin 被抢占
+            if docker pull "$CLEAN_IMG" < /dev/null; then
               docker tag "$CLEAN_IMG" "$TARGET"
-              docker push "$TARGET"
-              echo "✅ 成功: $TARGET"
+              docker push "$TARGET" < /dev/null
+              echo "✅ 成功推送: $TARGET"
             else
-              echo "❌ 失败: $CLEAN_IMG"
+              echo "❌ 镜像拉取失败: $CLEAN_IMG"
             fi
           done < raw_images.txt
 
@@ -63,5 +56,5 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '🚀 **同步已完成！**\nNode 24 环境运行正常，镜像已推送到阿里云。'
+              body: '🚀 **非交互式同步已完成！**\n镜像已成功重命名并推送到阿里云 ACR。'
             })
