@@ -1,6 +1,10 @@
-name: Sync Images via Actions UI
+name: Sync Images & Verify Hash
 
 on:
+  # 方式一：通过 Issue 自动触发
+  issues:
+    types: [opened, edited]
+  # 方式二：在 Actions 页面直接手动点击输入触发
   workflow_dispatch:
     inputs:
       images:
@@ -14,6 +18,10 @@ env:
 
 jobs:
   sync:
+    # 过滤条件：Issue 触发需校验标题和作者；手动点击触发直接运行
+    if: |
+      (github.event_name == 'issues' && contains(github.event.issue.title, 'sync') && github.event.issue.user.login == 'zhuchance') ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Login to Aliyun ACR
@@ -23,12 +31,17 @@ jobs:
           username: ${{ secrets.ALiyun_USER }}
           password: ${{ secrets.ALiyun_PWD }}
 
-      - name: Process Images
+      - name: Process Images and Verify Hash
         env:
-          # 直接获取在 Actions 页面手动输入的文本
-          RAW_BODY: ${{ inputs.images }}
+          # 根据触发方式自动选择获取源文本
+          RAW_BODY: ${{ github.event_name == 'issues' && github.event.issue.body || inputs.images }}
         run: |
           printf "%s" "$RAW_BODY" > raw_images.txt
+
+          # 初始化 Action 页面底部的 Markdown 摘要表头
+          echo "### 📦 镜像同步与 Hash 校验报告" >> $GITHUB_STEP_SUMMARY
+          echo "| 源镜像 | 目标镜像 | Image ID (Hash) | 校验结果 |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
 
           while IFS= read -r line || [[ -n "$line" ]]; do
             CLEAN_IMG=$(echo "$line" | tr -d '\r' | tr -d '`' | xargs)
@@ -36,17 +49,53 @@ jobs:
             [[ -z "$CLEAN_IMG" ]] && continue
             [[ "$CLEAN_IMG" == *" "* ]] && continue
 
-            echo "--------------------------------"
-            echo "正在同步: [$CLEAN_IMG]"
+            echo "------------------------------------------------"
+            echo "🚀 开始同步: [$CLEAN_IMG]"
             
             IMAGE_NAME_TAG=$(echo "$CLEAN_IMG" | awk -F'/' '{print $NF}')
             TARGET="registry.cn-hangzhou.aliyuncs.com/mgfw/${IMAGE_NAME_TAG}"
             
+            # 1. 非交互式拉取源镜像
             if docker pull "$CLEAN_IMG" < /dev/null; then
+              # 2. 提取源镜像 Hash (Image ID)
+              SRC_HASH=$(docker inspect --format='{{.Id}}' "$CLEAN_IMG" 2>/dev/null)
+              SHORT_HASH=${SRC_HASH:7:12} # 截取短 Hash 用于展示 (例如 sha256:a657... -> a657...)
+
+              # 3. 重命名并推送
               docker tag "$CLEAN_IMG" "$TARGET"
-              docker push "$TARGET" < /dev/null
-              echo "✅ 成功: $TARGET"
+              if docker push "$TARGET" < /dev/null; then
+                # 4. 提取目标镜像 Hash
+                TGT_HASH=$(docker inspect --format='{{.Id}}' "$TARGET" 2>/dev/null)
+                
+                echo "🔍 源镜像   ID: $SRC_HASH"
+                echo "🔍 阿里云镜像 ID: $TGT_HASH"
+
+                # 5. 比对 Hash
+                if [ "$SRC_HASH" == "$TGT_HASH" ]; then
+                  echo "✅ Hash 校验一致！镜像成功推送至: $TARGET"
+                  echo "| \`$CLEAN_IMG\` | \`$TARGET\` | \`$SHORT_HASH\` | ✅ 一致 |" >> $GITHUB_STEP_SUMMARY
+                else
+                  echo "⚠️ Hash 不一致！请检查镜像"
+                  echo "| \`$CLEAN_IMG\` | \`$TARGET\` | \`$SHORT_HASH\` | ⚠️ 不一致 |" >> $GITHUB_STEP_SUMMARY
+                fi
+              else
+                echo "❌ 推送失败: $TARGET"
+                echo "| \`$CLEAN_IMG\` | \`$TARGET\` | \`-\` | ❌ 推送失败 |" >> $GITHUB_STEP_SUMMARY
+              fi
             else
-              echo "❌ 失败: $CLEAN_IMG"
+              echo "❌ 镜像拉取失败: $CLEAN_IMG"
+              echo "| \`$CLEAN_IMG\` | \`-\` | \`-\` | ❌ 拉取失败 |" >> $GITHUB_STEP_SUMMARY
             fi
           done < raw_images.txt
+
+      - name: Success Comment
+        if: github.event_name == 'issues' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '🚀 **镜像同步与 Hash 校验已完成！**\n详细校验报告可在 Actions 运行页面的 Summary 查看。'
+            })
