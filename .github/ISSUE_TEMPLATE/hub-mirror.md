@@ -1,11 +1,11 @@
 ---
 name: hub-mirror issue template
-about: 用于执行镜像同步任务的 Issue 模板
-title: "[sync] 请求同步镜像"
+about: 用于提交镜像同步任务的 Issue 模板
+title: "[hub-mirror] 请求同步镜像"
 labels: ["hub-mirror"]
 ---
 
-请在此填写需要同步的镜像地址，每行一个，最多 20 个。
+请在此填写需要同步的镜像地址，每行一个。
 
 示例：
 
@@ -15,7 +15,7 @@ ghcr.io/nginx/nginx:latest
 nginx:latest
 
 > 注意：
-> - 标题需包含 `sync` 关键词以触发 workflow
+> - 请勿修改 labels（hub-mirror 标签用于触发 workflow）
 > - 每行填写一个完整的镜像地址（含 tag）
 > - 不要在同一行中填写多个镜像
-> - 不要修改 labels
+> - 标题随意，保持阵型即可

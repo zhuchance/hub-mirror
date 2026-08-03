@@ -1,10 +1,10 @@
 name: Sync Images & Verify Hash
 
 on:
-  # 方式一：通过 Issue 自动触发
+  # 方式一：通过提交 Issue 自动触发（需带 hub-mirror 标签）
   issues:
-    types: [opened, edited]
-  # 方式二：在 Actions 页面直接手动点击输入触发
+    types: [opened]
+  # 方式二：在 Actions 页面手动输入触发
   workflow_dispatch:
     inputs:
       images:
@@ -18,20 +18,12 @@ env:
 
 jobs:
   sync:
-    # 过滤条件：Issue 触发需校验标题和作者；手动点击触发直接运行
+    # 过滤条件：Issue 触发需校验 label；手动触发直接运行
     if: |
-      (github.event_name == 'issues' && contains(github.event.issue.title, 'sync') && github.event.issue.user.login == 'zhuchance') ||
+      (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'hub-mirror')) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.17'
-
       - name: Login to Aliyun ACR
         uses: docker/login-action@v3
         with:
@@ -39,26 +31,86 @@ jobs:
           username: ${{ secrets.ALiyun_USER }}
           password: ${{ secrets.ALiyun_PWD }}
 
-      - name: Run Go Sync
+      - name: Process Images and Verify Hash
         env:
           # 根据触发方式自动选择获取源文本
           RAW_BODY: ${{ github.event_name == 'issues' && github.event.issue.body || inputs.images }}
         run: |
-          go run main.go \
-            --images="$RAW_BODY" \
-            --username="${{ secrets.ALiyun_USER }}" \
-            --password="${{ secrets.ALiyun_PWD }}" \
-            --registry="registry.cn-hangzhou.aliyuncs.com" \
-            --namespace="mgfw" \
-            --maxImages=20 \
-            --outputPath=output.sh \
-            --reportPath=report.md
+          printf "%s" "$RAW_BODY" > raw_images.txt
 
-      - name: Add Report to Summary
-        if: always()
-        run: |
-          if [ -f report.md ]; then
-            cat report.md >> $GITHUB_STEP_SUMMARY
+          # 初始化 Action 页面底部的 Markdown 摘要表头
+          echo "### 📦 镜像同步与 Hash 校验报告" >> $GITHUB_STEP_SUMMARY
+          echo "| 源镜像 | 目标镜像 | Image ID (Hash) | 校验结果 |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+
+          # 初始化 output.sh（供 Issue 评论中使用）
+          > output.sh
+
+          SUCCESS_COUNT=0
+          FAIL_COUNT=0
+
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            CLEAN_IMG=$(echo "$line" | tr -d '\r' | tr -d '`' | xargs)
+
+            [[ -z "$CLEAN_IMG" ]] && continue
+            [[ "$CLEAN_IMG" == *" "* ]] && continue
+
+            echo "------------------------------------------------"
+            echo "🚀 开始同步: [$CLEAN_IMG]"
+
+            IMAGE_NAME_TAG=$(echo "$CLEAN_IMG" | awk -F'/' '{print $NF}')
+            TARGET="registry.cn-hangzhou.aliyuncs.com/mgfw/${IMAGE_NAME_TAG}"
+
+            # 1. 非交互式拉取源镜像
+            if docker pull "$CLEAN_IMG" < /dev/null; then
+              # 2. 提取源镜像 Hash (Image ID)
+              SRC_HASH=$(docker inspect --format='{{.Id}}' "$CLEAN_IMG" 2>/dev/null)
+              SHORT_HASH=${SRC_HASH:7:12}
+
+              # 3. 重命名并推送
+              docker tag "$CLEAN_IMG" "$TARGET"
+              if docker push "$TARGET" < /dev/null; then
+                # 4. 提取目标镜像 Hash
+                TGT_HASH=$(docker inspect --format='{{.Id}}' "$TARGET" 2>/dev/null)
+
+                echo "🔍 源镜像   ID: $SRC_HASH"
+                echo "🔍 阿里云镜像 ID: $TGT_HASH"
+
+                # 5. 比对 Hash
+                if [ "$SRC_HASH" == "$TGT_HASH" ]; then
+                  echo "✅ Hash 校验一致！镜像成功推送至: $TARGET"
+                  echo "| \`$CLEAN_IMG\` | \`$TARGET\` | \`$SHORT_HASH\` | ✅ 一致 |" >> $GITHUB_STEP_SUMMARY
+                  # 写入 output.sh 供用户本地使用
+                  echo "docker pull $TARGET" >> output.sh
+                  echo "docker tag $TARGET $CLEAN_IMG" >> output.sh
+                  echo "" >> output.sh
+                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                else
+                  echo "⚠️ Hash 不一致！请检查镜像"
+                  echo "| \`$CLEAN_IMG\` | \`$TARGET\` | \`$SHORT_HASH\` | ⚠️ 不一致 |" >> $GITHUB_STEP_SUMMARY
+                  FAIL_COUNT=$((FAIL_COUNT + 1))
+                fi
+              else
+                echo "❌ 推送失败: $TARGET"
+                echo "| \`$CLEAN_IMG\` | \`$TARGET\` | \`-\` | ❌ 推送失败 |" >> $GITHUB_STEP_SUMMARY
+                FAIL_COUNT=$((FAIL_COUNT + 1))
+              fi
+            else
+              echo "❌ 镜像拉取失败: $CLEAN_IMG"
+              echo "| \`$CLEAN_IMG\` | \`-\` | \`-\` | ❌ 拉取失败 |" >> $GITHUB_STEP_SUMMARY
+              FAIL_COUNT=$((FAIL_COUNT + 1))
+            fi
+          done < raw_images.txt
+
+          echo "------------------------------------------------"
+          echo "📊 同步完成：成功 $SUCCESS_COUNT 个，失败 $FAIL_COUNT 个"
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**统计：** ✅ 成功 $SUCCESS_COUNT 个 | ❌ 失败 $FAIL_COUNT 个" >> $GITHUB_STEP_SUMMARY
+
+          # 如果全部失败，以非零退出码标记 job 失败
+          if [ "$SUCCESS_COUNT" -eq 0 ]; then
+            echo "::error::没有镜像同步成功"
+            exit 1
           fi
 
       - name: Success Comment
@@ -70,16 +122,48 @@ jobs:
             let body = '🚀 **镜像同步与 Hash 校验已完成！**\n\n详细校验报告可在 Actions 运行页面的 Summary 查看。\n'
 
             // 如果有 output.sh，附带使用说明
-            if (fs.existsSync('output.sh')) {
+            if (fs.existsSync('output.sh') && fs.readFileSync('output.sh', 'utf8').trim()) {
               const data = fs.readFileSync('output.sh', 'utf8')
               body += '\n您可以直接执行该命令：\n\n```shell\n'
               body += "echo -e '" + data.replace(/\n/g, '\\n') + "' | bash\n"
               body += '```\n\n或是手动执行：\n\n```shell\n' + data + '```\n'
             }
 
+            body += '\n希望可以帮助到您，祝您周' + "日一二三四五六".charAt(new Date().getDay()) + '愉快！'
+
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: body
+            })
+
+      - name: Add Success Label
+        if: github.event_name == 'issues' && success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.addLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['success']
+            })
+
+      - name: Add Failure Label
+        if: github.event_name == 'issues' && failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.addLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['failure']
+            })
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: "[构建失败，点击查看](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
             })
