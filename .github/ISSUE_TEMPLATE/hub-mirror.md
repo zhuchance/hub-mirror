@@ -1,19 +1,21 @@
 ---
 name: hub-mirror issue template
-about: 用于执行 hub-mirror workflow 的 issue 模板
-title: "[hub-mirror] 请求执行任务"
+about: 用于执行镜像同步任务的 Issue 模板
+title: "[sync] 请求同步镜像"
 labels: ["hub-mirror"]
 ---
 
-{
-    "hub-mirror": [
-        "你需要转换的镜像",
-        "你需要转换的镜像",
-        "每次最多 11 个",
-        "改这个 json 就可以了",
-        "别乱改内容",
-        "标题随意，保持阵型是最好的",
-        "hub-mirror 标签是必选的",
-        "......"
-    ]
-}
+请在此填写需要同步的镜像地址，每行一个，最多 20 个。
+
+示例：
+
+gcr.io/google-samples/microservices-demo/emailservice:v0.3.5
+quay.io/jetstack/cert-manager-controller:v1.13.3
+ghcr.io/nginx/nginx:latest
+nginx:latest
+
+> 注意：
+> - 标题需包含 `sync` 关键词以触发 workflow
+> - 每行填写一个完整的镜像地址（含 tag）
+> - 不要在同一行中填写多个镜像
+> - 不要修改 labels
